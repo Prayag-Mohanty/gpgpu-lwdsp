@@ -1,0 +1,14 @@
+self exe links to: /workspace/gpgpu-sim_simulations/benchmarks/src/cuda/bin/release/ispass-2009-BFS
+self exe links to: /workspace/gpgpu-sim_simulations/benchmarks/src/cuda/bin/release/ispass-2009-BFS
+10.1
+
+
+        *** GPGPU-Sim Simulator Version 4.2.0  [build gpgpu-sim_git-commit-a4ce3fe_modified_0.0] ***
+
+
+GPGPU-Sim PTX: simulation mode 0 (can change with PTX_SIM_MODE_FUNC environment variable:
+               1=functional simulation only, 0=detailed performance simulator)
+GPGPU-Sim PTX: overriding embedded ptx with ptx file (PTX_SIM_USE_PTX_FILE is set)
+
+
+GPGPU-Sim ** ERROR: Cannot open config file 'gpgpusim.config'

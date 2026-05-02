@@ -1,0 +1,6 @@
+*.o
+*.a
+*.cu.cpp
+*.ptx
+build/
+lib/
