@@ -1,57 +1,86 @@
-LAVC was implemented within GPGPUSim v4.0, a cycle-accurate GPU microarchitec-
-ture simulator widely used in academic research. The implementation required modifica-
-tions to two primary source files: shader.cc (warp scheduler) and gpu-cache.cc/gpu-cache.h
-(cache hierarchy). A new module, victim cache.cc, was added to encapsulate the VTT
-and load monitor logic.
-5.1 Simulator Configuration
-The GV100 configuration file was modified to enable the LAVC features via configuration
-flags:
-• -gpgpu l1 victim cache 1: Enables the Linebacker victim cache. Sets the VTT
-to 4-way, 48 sets; allocates register file entries 1024–2047 as the SUR-mapped vic-
-tim data array (VDA). The monitoring period is 50,000 cycles and the hit-ratio
-threshold is 0.20.
-• -gpgpu locality scheduler 1: Enables the LWS. Configures the intra-warp lo-
-cality threshold at 2 mfs per prefetch block and inter-warp threshold at 2 warps
-per block. Score decay period is 25,000 cycles.
-• -gpgpu victim cache sets 48: Sets VTT set count equal to L1D set count.
-• -gpgpu victim cache ways 4: Sets VTT associativity.
-5.2 Warp Scheduler Modifications (shader.cc)
-The scheduler unit class was extended with the following additions:
-• A per-warp score array (m locality score[MAX WARPS]) of 8-bit unsigned integers,
-initialised to zero at kernel launch.
-• A locality detector method that queries the MSHR at each miss event, identifies
-prefetch blocks with two or more recorded miss entries, and increments the scores
-of all warps whose mfs map to the same block.
-16
-• A modified cycle() method that sorts the candidate warp list by {is memory warp
-DESC, m locality score DESC, warp age ASC} before selecting the next warp to
-issue. Tie-breaking falls back to the original GTO ordering.
-• A score decay() method invoked every 25,000 cycles that right-shifts all scores
-by one bit (halving them), preventing old locality information from perpetually
-dominating scheduling.
-5.3 Victim Cache Implementation (victim cache.cc)
-The VictimCache class encapsulates:
-• VTT: A 4-way set-associative tag array with 48 sets, implemented as a 2D array
-of VTTEntry structs containing {valid, tag, lru state, register number}.
-• LoadMonitor: A 32-entry table indexed by 5-bit hashed PC, storing {hit count,
-miss count, valid[2]} per load. Updated at every L1D hit or miss from the
-arbitrator’s access log.
-• SUR allocator: Tracks which warp register numbers (1024–2047) are unused.
-Assigns register numbers to VTT entries on insertion and reclaims them on VTT
-eviction.
-• probe(addr): Returns a VTTEntry if addr hits in the VTT, null otherwise.
-• fill(addr, line): Inserts addr into the VTT, writing the cache line into the
-corresponding register file entry via a register-file write request injected into the
-arbitrator.
-5.4 Integration with the Memory Pipeline (gpu-cache.cc)
-The existing L1D access path in ldst unit::process memory access() was extended
-to call victim cache.probe() on an L1D miss, prior to issuing the L2 request. A VTT
-hit returns a VICTIM HIT status, which causes the pipeline to:
-• Read the compressed line from the appropriate register-file bank via the arbitrator.
-• Write the decompressed data to the destination register(s) of the requesting warp.
-• Increment the Load Monitor’s hit counter for the requesting load’s PC.
-• Update the VTT LRU state for the hit set.
-On an L1D eviction, the evicted line’s load PC is checked against the Load Mon-
-itor. If the load is classified as high-locality (valid[0] AND valid[1] both set),
-victim cache.fill() is called with the evicted address and data. Otherwise, the line is
-discarded as per the original LRU eviction policy
+# Locality-Aware Victim Cache (LAVC)
+
+LAVC was implemented within **GPGPU-Sim v4.0**, a cycle-accurate GPU microarchitecture simulator widely used in academic research.  
+The implementation required modifications to two primary source files:
+
+- `shader.cc` (warp scheduler)  
+- `gpu-cache.cc` / `gpu-cache.h` (cache hierarchy)  
+
+Additionally, a new module `victim_cache.cc` was added to encapsulate the **Victim Tag Table (VTT)** and **Load Monitor** logic.
+
+---
+
+## 5.1 Simulator Configuration
+
+The GV100 configuration file was modified to enable LAVC features via configuration flags:
+
+- `-gpgpu_l1_victim_cache 1`  
+  Enables the Linebacker victim cache.  
+  - VTT: 4-way, 48 sets  
+  - SUR-mapped victim data array (VDA): register file entries 1024–2047  
+  - Monitoring period: 50,000 cycles  
+  - Hit-ratio threshold: 0.20  
+
+- `-gpgpu_locality_scheduler 1`  
+  Enables the Locality-Aware Warp Scheduler (LWS).  
+  - Intra-warp locality threshold: 2 mfs per prefetch block  
+  - Inter-warp threshold: 2 warps per block  
+  - Score decay period: 25,000 cycles  
+
+- `-gpgpu_victim_cache_sets 48`  
+  Sets VTT set count equal to L1D set count.  
+
+- `-gpgpu_victim_cache_ways 4`  
+  Sets VTT associativity.  
+
+---
+
+## 5.2 Warp Scheduler Modifications (`shader.cc`)
+
+The scheduler unit class was extended with:
+
+- **Per-warp score array**: `m_locality_score[MAX_WARPS]` (8-bit unsigned integers, initialized to zero at kernel launch).  
+- **Locality detector**: Queries the MSHR at each miss event, identifies prefetch blocks with ≥2 miss entries, increments scores of all warps mapping to that block.  
+- **Modified `cycle()` method**: Sorts candidate warp list by `{is_memory_warp DESC, m_locality_score DESC, warp_age ASC}` before issuing. Tie-breaking falls back to GTO ordering.  
+- **Score decay**: Invoked every 25,000 cycles, right-shifts all scores by one bit (halving them).  
+
+---
+
+## 5.3 Victim Cache Implementation (`victim_cache.cc`)
+
+The `VictimCache` class encapsulates:
+
+- **VTT**: 4-way set-associative tag array with 48 sets.  
+  - Implemented as 2D array of `VTTEntry` structs `{valid, tag, lru_state, register_number}`.  
+
+- **LoadMonitor**: 32-entry table indexed by 5-bit hashed PC.  
+  - Stores `{hit_count, miss_count, valid[2]}` per load.  
+  - Updated at every L1D hit/miss.  
+
+- **SUR allocator**: Tracks unused warp register numbers (1024–2047).  
+  - Assigns registers to VTT entries on insertion, reclaims them on eviction.  
+
+- **Methods**:  
+  - `probe(addr)`: Returns `VTTEntry` if addr hits, null otherwise.  
+  - `fill(addr, line)`: Inserts addr into VTT, writes cache line into register file entry via arbitrator.  
+
+---
+
+## 5.4 Integration with Memory Pipeline (`gpu-cache.cc`)
+
+The L1D access path in `ldst_unit::process_memory_access()` was extended:
+
+- On **L1D miss**:  
+  - Calls `victim_cache.probe()` before issuing L2 request.  
+  - On VTT hit:  
+    - Reads compressed line from register-file bank via arbitrator.  
+    - Writes decompressed data to destination registers.  
+    - Increments Load Monitor hit counter.  
+    - Updates VTT LRU state.  
+
+- On **L1D eviction**:  
+  - Checks evicted line’s load PC against Load Monitor.  
+  - If classified as high-locality (`valid[0] && valid[1]`):  
+    - Calls `victim_cache.fill()` with evicted address and data.  
+  - Otherwise:  
+    - Discards line per original LRU policy.  
